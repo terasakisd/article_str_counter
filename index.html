@@ -386,22 +386,51 @@
             
             let working = text;
             const originalCount = text.replace(/\s+/g, '').length;
+            const originalText = text;  // 元のテキストを保存（位置計算用）
 
-            // 1. HTMLコメント
+            // 0. ■ディスクリプションブロックを検出（```で囲まれている場合）
+            // ■ディスクリプション部分だけ削除、中身はそのまま残す
+            working = working.replace(/```\s*■\s*ディスクリプション\s*([\s\S]*?)```/g, (match, content) => {
+                excludedItems.push({ type: '■ディスクリプション', content: '```■ディスクリプション' });
+                excludedItems.push({ type: 'コードブロック閉じ', content: '```' });
+                return content; // 中身のテキストだけ残す
+            });
+
+            // 1. 通常の■ディスクリプション（```で囲まれていない場合）
+            working = working.replace(/■\s*ディスクリプション/g, (match) => {
+                excludedItems.push({ type: '■ディスクリプション', content: match });
+                return '';
+            });
+
+            // 2. コードブロックを検出して保護（■ディスクリプション以外の通常のコードブロック）
+            const codeBlockMarkers = [];
+            let codeBlockId = 0;
+            let match;
+            const codeBlockRegex = /```[\s\S]*?```/g;
+            while ((match = codeBlockRegex.exec(working)) !== null) {
+                const marker = `___CODEBLOCK_${codeBlockId}___`;
+                const cleanText = match[0].replace(/```/g, '');
+                // 元のテキストでの位置を検索
+                const originalPosition = originalText.indexOf(match[0]);
+                codeBlockMarkers.push({
+                    marker: marker,
+                    id: `code-${codeBlockId}`,
+                    type: 'コードブロック',
+                    content: match[0],
+                    charCount: cleanText.replace(/\s+/g, '').length,
+                    position: originalPosition >= 0 ? originalPosition : 999999  // 見つからない場合は最後に
+                });
+                codeBlockId++;
+            }
+            // マーカーに置き換え
+            working = working.replace(/```[\s\S]*?```/g, (m, offset) => {
+                const block = codeBlockMarkers.find(b => b.content === m);
+                return block ? block.marker : m;
+            });
+
+            // 3. HTMLコメント
             working = working.replace(/<!--[\s\S]*?-->/g, (match) => {
                 excludedItems.push({ type: 'HTMLコメント', content: match });
-                return '';
-            });
-
-            // 2. コードブロック
-            working = working.replace(/```[\s\S]*?```/g, (match) => {
-                excludedItems.push({ type: 'コードブロック', content: match });
-                return '';
-            });
-
-            // 3. ■ディスクリプション
-            working = working.replace(/■ディスクリプション/g, (match) => {
-                excludedItems.push({ type: 'ディスクリプション', content: match });
                 return '';
             });
 
@@ -454,15 +483,23 @@
                             textOnly = textOnly.replace(/<[^>]*>/g, '');
                         } while (textOnly.length !== prevLength);
                         
+                        const originalPosition = originalText.indexOf(tableText);
                         warningItems.push({
                             id: `table-${tableId++}`,
                             type: 'テーブル',
                             content: tableText,
-                            charCount: textOnly.replace(/\s+/g, '').length
+                            charCount: textOnly.replace(/\s+/g, '').length,
+                            position: originalPosition >= 0 ? originalPosition : 999999
                         });
                         inTable = false;
                         tableLines = [];
                     }
+                    continue;
+                }
+
+                // ※で始まる行を除外
+                if (trim.startsWith('※')) {
+                    excludedItems.push({ type: '※注釈', content: line });
                     continue;
                 }
 
@@ -507,11 +544,13 @@
                     const listText = listLines.join('\n');
                     // 記号を除外して文字数カウント
                     const cleanText = listText.replace(/^[\*•・]\s*/gm, '');
+                    const originalPosition = originalText.indexOf(listText);
                     warningItems.push({
                         id: `list-${listId++}`,
                         type: 'リスト',
                         content: listText,
-                        charCount: cleanText.replace(/\s+/g, '').length
+                        charCount: cleanText.replace(/\s+/g, '').length,
+                        position: originalPosition >= 0 ? originalPosition : 999999
                     });
                     listLines = [];
                 }
@@ -524,15 +563,33 @@
                 const listText = listLines.join('\n');
                 // 記号を除外して文字数カウント
                 const cleanText = listText.replace(/^[\*•・]\s*/gm, '');
+                const originalPosition = originalText.indexOf(listText);
                 warningItems.push({
                     id: `list-${listId++}`,
                     type: 'リスト',
                     content: listText,
-                    charCount: cleanText.replace(/\s+/g, '').length
+                    charCount: cleanText.replace(/\s+/g, '').length,
+                    position: originalPosition >= 0 ? originalPosition : 999999
                 });
             }
 
             working = newLines.join('\n');
+
+            // コードブロックのマーカーを要確認項目に追加してテキストから削除
+            codeBlockMarkers.forEach(block => {
+                warningItems.push({
+                    id: block.id,
+                    type: block.type,
+                    content: block.content,
+                    charCount: block.charCount,
+                    position: block.position
+                });
+                // マーカーを削除
+                working = working.replace(block.marker, '');
+            });
+
+            // 要確認項目を元のテキストでの出現順にソート
+            warningItems.sort((a, b) => (a.position || 0) - (b.position || 0));
 
             // ** 囲み
             working = working.replace(/\*\*([^*]+?)\*\*/g, (match) => {
@@ -656,31 +713,39 @@
                 if (includedWarnings.has(item.id)) {
                     let cleanText = item.content;
                     
-                    // 1. まず特定のタグとその中身を削除
-                    // <p id="gdcalert...">...</p> を完全削除
-                    cleanText = cleanText.replace(/<p[^>]*id="gdcalert[^"]*"[^>]*>[\s\S]*?<\/p>/gi, '');
+                    // コードブロックの場合は ``` を削除
+                    if (item.type === 'コードブロック') {
+                        cleanText = cleanText.replace(/```/g, '');
+                    }
                     
-                    // <img> タグを削除
-                    cleanText = cleanText.replace(/<img[^>]*>/gi, '');
-                    
-                    // <a> タグとその中身を削除
-                    cleanText = cleanText.replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '');
-                    
-                    // <span> タグとその中身を削除
-                    cleanText = cleanText.replace(/<span[^>]*>[\s\S]*?<\/span>/gi, '');
-                    
-                    // <br> タグを削除
-                    cleanText = cleanText.replace(/<br[^>]*>/gi, '');
-                    
-                    // 2. 残りのHTMLタグを削除（繰り返し適用）
-                    let prevLength;
-                    do {
-                        prevLength = cleanText.length;
-                        cleanText = cleanText.replace(/<[^>]*>/g, '');
-                    } while (cleanText.length !== prevLength);
-                    
-                    // 3. 箇条書き記号を削除 (*, •, ・)
-                    cleanText = cleanText.replace(/^[\*•・]\s*/gm, '');
+                    // テーブルやリストの場合のクリーニング
+                    if (item.type === 'テーブル' || item.type === 'リスト') {
+                        // 1. まず特定のタグとその中身を削除
+                        // <p id="gdcalert...">...</p> を完全削除
+                        cleanText = cleanText.replace(/<p[^>]*id="gdcalert[^"]*"[^>]*>[\s\S]*?<\/p>/gi, '');
+                        
+                        // <img> タグを削除
+                        cleanText = cleanText.replace(/<img[^>]*>/gi, '');
+                        
+                        // <a> タグとその中身を削除
+                        cleanText = cleanText.replace(/<a[^>]*>[\s\S]*?<\/a>/gi, '');
+                        
+                        // <span> タグとその中身を削除
+                        cleanText = cleanText.replace(/<span[^>]*>[\s\S]*?<\/span>/gi, '');
+                        
+                        // <br> タグを削除
+                        cleanText = cleanText.replace(/<br[^>]*>/gi, '');
+                        
+                        // 2. 残りのHTMLタグを削除（繰り返し適用）
+                        let prevLength;
+                        do {
+                            prevLength = cleanText.length;
+                            cleanText = cleanText.replace(/<[^>]*>/g, '');
+                        } while (cleanText.length !== prevLength);
+                        
+                        // 3. 箇条書き記号を削除 (*, •, ・)
+                        cleanText = cleanText.replace(/^[\*•・]\s*/gm, '');
+                    }
                     
                     preview += '\n' + cleanText;
                 }
