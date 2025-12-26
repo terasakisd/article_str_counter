@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>記事文字数カウンター</title>
+    <title>記事文字数カウンター（統合版）</title>
     <style>
         * {
             margin: 0;
@@ -36,6 +36,23 @@
         .subtitle {
             color: #6B7280;
             margin-bottom: 1.5rem;
+        }
+        .mode-selector {
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 1.5rem;
+        }
+        .mode-selector label {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            color: #374151;
+        }
+        .mode-selector input[type="radio"] {
+            cursor: pointer;
+        }
+        .mode-selector span {
+            margin-left: 0.5rem;
         }
         textarea {
             width: 100%;
@@ -278,14 +295,27 @@
             <h1>記事文字数カウンター</h1>
             <p class="subtitle">外注記事をペーストして文字数を自動集計</p>
             
-            <textarea id="input" placeholder="マークダウン形式の記事をここにペースト..."></textarea>
+            <div class="mode-selector">
+                <label>
+                    <input type="radio" name="mode" value="markdown" checked>
+                    <span>マークダウン形式</span>
+                </label>
+                <label>
+                    <input type="radio" name="mode" value="wp">
+                    <span>WordPress HTML</span>
+                </label>
+            </div>
+            
+            <textarea id="input" placeholder="記事をここにペースト..."></textarea>
             <button class="button" id="analyzeBtn">文字数を集計</button>
 
             <div id="results" class="results hidden">
                 <div class="result-main">
                     <h2>最終文字数</h2>
-                    <p class="result-number"><span id="finalCount">0</span> 文字</p>
-                    <p style="font-size: 0.875rem; margin-top: 0.5rem; opacity: 0.9;">除外項目を反映した文字数</p>
+                    <div style="display: flex; align-items: baseline;">
+                        <span class="result-number" id="finalCount">0</span>
+                        <span class="result-unit">文字</span>
+                    </div>
                 </div>
 
                 <div class="stats-grid">
@@ -380,6 +410,9 @@
                 return;
             }
 
+            // モードを取得
+            const mode = document.querySelector('input[name="mode"]:checked').value;
+
             excludedItems = [];
             warningItems = [];
             includedWarnings = new Set();
@@ -387,6 +420,70 @@
             let working = text;
             const originalCount = text.replace(/\s+/g, '').length;
             const originalText = text;  // 元のテキストを保存（位置計算用）
+
+            // 絵文字を削除
+            working = working.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F700}-\u{1F77F}\u{1F780}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{1F1E6}-\u{1F1FF}]/gu, '');
+
+            // WPモードの場合は追加の前処理
+            if (mode === 'wp') {
+                // blockquote, details, img, div.midashi を先に削除
+                working = working.replace(/<blockquote[^>]*>[\s\S]*?<\/blockquote>/gi, (match) => {
+                    const pos = originalText.indexOf(match);
+                    excludedItems.push({ type: 'blockquoteタグ', content: match, position: pos >= 0 ? pos : 999999 });
+                    return '';
+                });
+                
+                working = working.replace(/<details[^>]*>[\s\S]*?<\/details>/gi, (match) => {
+                    const pos = originalText.indexOf(match);
+                    excludedItems.push({ type: 'detailsタグ', content: match, position: pos >= 0 ? pos : 999999 });
+                    return '';
+                });
+                
+                working = working.replace(/<img[^>]*>/gi, (match) => {
+                    const pos = originalText.indexOf(match);
+                    excludedItems.push({ type: 'imgタグ', content: match, position: pos >= 0 ? pos : 999999 });
+                    return '';
+                });
+                
+                // すべてのdivタグを削除（開始タグのみ）
+                working = working.replace(/<div[^>]*>/gi, '');
+                
+                // すべての</div>タグを削除（終了タグのみ）
+                working = working.replace(/<\/div>/gi, '');
+
+                // ul/ol HTMLリストを要確認項目に追加
+                let listHtmlId = 0;
+                working = working.replace(/<(ul|ol)[^>]*>[\s\S]*?<\/\1>/gi, (match) => {
+                    let textOnly = match;
+                    let prevLength;
+                    do {
+                        prevLength = textOnly.length;
+                        textOnly = textOnly.replace(/<[^>]*>/g, '');
+                    } while (textOnly.length !== prevLength);
+                    
+                    const originalPosition = originalText.indexOf(match);
+                    warningItems.push({
+                        id: `html-list-${listHtmlId++}`,
+                        type: 'HTMLリスト',
+                        content: match,
+                        charCount: textOnly.replace(/\s+/g, '').length,
+                        position: originalPosition >= 0 ? originalPosition : 999999
+                    });
+                    return '';
+                });
+                
+                // HTMLエンティティを削除
+                working = working.replace(/&[a-zA-Z]+;/g, (match) => {
+                    const pos = originalText.indexOf(match);
+                    excludedItems.push({ type: 'HTMLエンティティ', content: match, position: pos >= 0 ? pos : 999999 });
+                    return '';
+                });
+                working = working.replace(/&#[0-9]+;/g, (match) => {
+                    const pos = originalText.indexOf(match);
+                    excludedItems.push({ type: 'HTMLエンティティ', content: match, position: pos >= 0 ? pos : 999999 });
+                    return '';
+                });
+            }
 
             // 0. ■ディスクリプションブロックを検出（```で囲まれている場合）
             // ■ディスクリプション部分だけ削除、中身はそのまま残す
@@ -504,15 +601,39 @@
                 }
 
                 // 見出し
-                if (trim.match(/^#{1,6}\s/)) {
+                const headingPattern = mode === 'wp' 
+                    ? /^#{1,6}\s|^<h[2-4][^>]*>|<\/h[2-4]>/
+                    : /^#{1,6}\s/;
+                if (trim.match(headingPattern)) {
                     excludedItems.push({ type: '見出し', content: line });
                     continue;
                 }
 
-                // URL行
+                // URL含む行の処理
                 if (trim.match(/https?:\/\//)) {
-                    excludedItems.push({ type: 'URL行', content: line });
-                    continue;
+                    // WPモードの場合、URLを含むHTMLタグのみ削除、テキストは残す
+                    if (mode === 'wp') {
+                        let cleanedLine = line;
+                        // <a href="...">...</a> タグを削除
+                        cleanedLine = cleanedLine.replace(/<a[^>]*href="[^"]*https?:\/\/[^"]*"[^>]*>[\s\S]*?<\/a>/gi, (match) => {
+                            excludedItems.push({ type: 'URLリンクタグ', content: match });
+                            return '';
+                        });
+                        // URL単体が残っている場合はそれも削除
+                        cleanedLine = cleanedLine.replace(/https?:\/\/[^\s<]+/g, (match) => {
+                            excludedItems.push({ type: 'URL', content: match });
+                            return '';
+                        });
+                        // 空になっていなければ残す
+                        if (cleanedLine.trim()) {
+                            newLines.push(cleanedLine);
+                        }
+                        continue;
+                    } else {
+                        // マークダウンモードは行全体を除外
+                        excludedItems.push({ type: 'URL行', content: line });
+                        continue;
+                    }
                 }
 
                 // 画像リンク
@@ -604,10 +725,26 @@
             });
 
             // HTMLタグ（table以外）
-            working = working.replace(/<(?!table|\/table)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
-                excludedItems.push({ type: 'HTMLタグ', content: match });
-                return '';
-            });
+            // WPモードの場合: span, ul, ol, liは除外対象から外す / spanタグは削除するが中身は残す
+            if (mode === 'wp') {
+                // spanタグのみ削除、中身は残す（除外項目には表示しない）
+                working = working.replace(/<\/?span[^>]*>/gi, '');
+                
+                // その他のHTMLタグ（table, ul, ol, li, span以外）
+                working = working.replace(/<(?!table|\/table|ul|\/ul|ol|\/ol|li|\/li)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table|ul|ol|li)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
+                    excludedItems.push({ type: 'HTMLタグ', content: match });
+                    return '';
+                });
+            } else {
+                // マークダウンモード: table以外を除外
+                working = working.replace(/<(?!table|\/table)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
+                    excludedItems.push({ type: 'HTMLタグ', content: match });
+                    return '';
+                });
+            }
+
+            // 除外項目を出現順にソート
+            excludedItems.sort((a, b) => (a.position || 999999) - (b.position || 999999));
 
             processedText = working;
             displayResults(originalCount);
@@ -633,6 +770,8 @@
                     `;
                     list.appendChild(div);
                 });
+            } else {
+                document.getElementById('excludedSection').classList.add('hidden');
             }
 
             // 要確認項目表示
@@ -657,6 +796,8 @@
                     `;
                     list.appendChild(div);
                 });
+            } else {
+                document.getElementById('warningSection').classList.add('hidden');
             }
 
             updateCounts();
@@ -719,7 +860,7 @@
                     }
                     
                     // テーブルやリストの場合のクリーニング
-                    if (item.type === 'テーブル' || item.type === 'リスト') {
+                    if (item.type === 'テーブル' || item.type === 'リスト' || item.type === 'HTMLリスト') {
                         // 1. まず特定のタグとその中身を削除
                         // <p id="gdcalert...">...</p> を完全削除
                         cleanText = cleanText.replace(/<p[^>]*id="gdcalert[^"]*"[^>]*>[\s\S]*?<\/p>/gi, '');
