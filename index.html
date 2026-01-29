@@ -531,6 +531,12 @@
                 return '';
             });
 
+            // 3.5. smallタグを中身ごと除外（行単位処理の前に実行）
+            working = working.replace(/<small[\s\S]*?<\/small>/gi, (match) => {
+                excludedItems.push({ type: 'smallタグ', content: match });
+                return '';
+            });
+
             // 4-10. 行ごと処理
             const lines = working.split('\n');
             const newLines = [];
@@ -636,14 +642,22 @@
                     }
                 }
 
-                // 画像リンク
+                // 画像リンク（先に判定）
                 if (trim.startsWith('![')) {
                     excludedItems.push({ type: '画像リンク', content: line });
                     continue;
                 }
 
+                // ショートコード（[から始まる行全般 - [toc]など）
+                if (trim.startsWith('[')) {
+                    excludedItems.push({ type: 'ショートコード', content: line });
+                    continue;
+                }
+
                 // 記号行（* スペースなし含む）
-                if (trim.match(/^[★☆○◯●◎◉□■◆◇▲△▼▽►▶◀◄]/) || trim.match(/^\*[^\s]/)) {
+                // ただし、行内にHTMLタグが含まれている場合は除外しない（タグ内のテキストの可能性があるため）
+                const hasHtmlTag = line.match(/<\/?[a-zA-Z][^>]*>/);
+                if (!hasHtmlTag && (trim.match(/^[★☆○◯●◎◉□■◆◇▲△▼▽►▶◀◄※]/) || trim.match(/^\*[^\s]/))) {
                     excludedItems.push({ type: '記号行', content: line });
                     continue;
                 }
@@ -725,13 +739,16 @@
             });
 
             // HTMLタグ（table以外）
-            // WPモードの場合: span, ul, ol, liは除外対象から外す / spanタグは削除するが中身は残す
+            // WPモードの場合: span, ul, ol, li, h1-h6は除外対象から外す / span, hタグは削除するが中身は残す
             if (mode === 'wp') {
                 // spanタグのみ削除、中身は残す（除外項目には表示しない）
                 working = working.replace(/<\/?span[^>]*>/gi, '');
                 
-                // その他のHTMLタグ（table, ul, ol, li, span以外）
-                working = working.replace(/<(?!table|\/table|ul|\/ul|ol|\/ol|li|\/li)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table|ul|ol|li)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
+                // hタグのタグ部分のみ削除、中身は残す（除外項目には表示しない）
+                working = working.replace(/<\/?h[1-6][^>]*>/gi, '');
+                
+                // その他のHTMLタグ（table, ul, ol, li, span, h1-h6以外）
+                working = working.replace(/<(?!table|\/table|ul|\/ul|ol|\/ol|li|\/li|h[1-6]|\/h[1-6])([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table|ul|ol|li|h[1-6])([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
                     excludedItems.push({ type: 'HTMLタグ', content: match });
                     return '';
                 });
