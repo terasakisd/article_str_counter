@@ -451,6 +451,27 @@
                 // すべての</div>タグを削除（終了タグのみ）
                 working = working.replace(/<\/div>/gi, '');
 
+                // pタグ class="circle" または class="cross" を要確認項目に追加
+                let pTagId = 0;
+                working = working.replace(/<p\s+[^>]*class\s*=\s*["'](circle|cross)["'][^>]*>[\s\S]*?<\/p>/gi, (match, className) => {
+                    let textOnly = match;
+                    let prevLength;
+                    do {
+                        prevLength = textOnly.length;
+                        textOnly = textOnly.replace(/<[^>]*>/g, '');
+                    } while (textOnly.length !== prevLength);
+                    
+                    const originalPosition = originalText.indexOf(match);
+                    warningItems.push({
+                        id: `p-circle-cross-${pTagId++}`,
+                        type: `pタグ(${className})`,
+                        content: match,
+                        charCount: textOnly.replace(/\s+/g, '').length,
+                        position: originalPosition >= 0 ? originalPosition : 999999
+                    });
+                    return '';
+                });
+
                 // ul/ol HTMLリストを要確認項目に追加
                 let listHtmlId = 0;
                 working = working.replace(/<(ul|ol)[^>]*>[\s\S]*?<\/\1>/gi, (match) => {
@@ -876,8 +897,8 @@
                         cleanText = cleanText.replace(/```/g, '');
                     }
                     
-                    // テーブルやリストの場合のクリーニング
-                    if (item.type === 'テーブル' || item.type === 'リスト' || item.type === 'HTMLリスト') {
+                    // テーブル、リスト、HTMLリスト、pタグ(circle/cross)の場合のクリーニング
+                    if (item.type === 'テーブル' || item.type === 'リスト' || item.type === 'HTMLリスト' || item.type.startsWith('pタグ(')) {
                         // 1. まず特定のタグとその中身を削除
                         // <p id="gdcalert...">...</p> を完全削除
                         cleanText = cleanText.replace(/<p[^>]*id="gdcalert[^"]*"[^>]*>[\s\S]*?<\/p>/gi, '');
