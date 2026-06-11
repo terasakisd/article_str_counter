@@ -767,7 +767,11 @@
                 
                 // hタグのタグ部分のみ削除、中身は残す（除外項目には表示しない）
                 working = working.replace(/<\/?h[1-6][^>]*>/gi, '');
-                
+
+                // pタグのタグ部分のみ削除、中身は残す（除外項目には表示しない）
+                // ※ class="circle"/"cross" のpタグは既に要確認項目として抽出済み
+                working = working.replace(/<\/?p\b[^>]*>/gi, '');
+
                 // その他のHTMLタグ（table, ul, ol, li, span, h1-h6以外）
                 working = working.replace(/<(?!table|\/table|ul|\/ul|ol|\/ol|li|\/li|h[1-6]|\/h[1-6])([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>[\s\S]*?<\/\1>|<(?!table|ul|ol|li|h[1-6])([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/gi, (match) => {
                     excludedItems.push({ type: 'HTMLタグ', content: match });
